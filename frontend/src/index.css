@@ -1,0 +1,6 @@
+@import "tailwindcss";
+@theme { --font-sans: "Inter", "SF Pro Display", "Segoe UI", sans-serif; }
+html { background: #090b0d; } body { margin: 0; min-width: 320px; } button, input, select { font: inherit; }
+.icon-box { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; border: 1px solid; }
+.icon-box.amber { color: #fbbf24; background: rgba(245,158,11,.1); border-color: rgba(245,158,11,.22); }.icon-box.emerald { color: #34d399; background: rgba(16,185,129,.1); border-color: rgba(16,185,129,.22); }.icon-box.violet { color: #a78bfa; background: rgba(139,92,246,.1); border-color: rgba(139,92,246,.22); }.icon-box.cyan { color: #22d3ee; background: rgba(6,182,212,.1); border-color: rgba(6,182,212,.22); }
+.tool-surface { border: 1px solid rgba(255,255,255,.09); border-radius: 18px; background: rgba(255,255,255,.035); }

@@ -1,0 +1,26 @@
+# API and configuration
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic-settings
+python-dotenv
+
+# Persistence and document processing
+sqlalchemy
+pypdf
+chardet
+
+# RAG
+langchain-community
+langchain-core
+langchain-text-splitters
+langchain-chroma
+langchain-huggingface
+langchain-mistralai
+sentence-transformers
+
+# Financial charts
+numpy
+pandas
+matplotlib
+seaborn
