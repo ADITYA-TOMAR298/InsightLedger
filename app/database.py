@@ -46,7 +46,10 @@ class FinancialMetric(Base):
 
 
 settings = get_settings()
-engine = create_engine(settings.database_url, connect_args={"check_same_thread": False})
+engine_options = {"pool_pre_ping": True}
+if settings.database_url.startswith("sqlite"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+engine = create_engine(settings.database_url, **engine_options)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -60,4 +63,3 @@ def get_db():
         yield db
     finally:
         db.close()
-

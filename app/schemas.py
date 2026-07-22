@@ -52,7 +52,7 @@ class MetricUpsert(BaseModel):
 class ChartRequest(BaseModel):
     companies: list[str] = Field(min_length=1, max_length=10)
     metrics: list[str] = Field(min_length=1, max_length=6)
-    chart_type: Literal["line", "bar", "grouped_bar", "histogram", "countplot", "boxplot", "heatmap"] = "line"
+    chart_type: Literal["line", "bar", "grouped_bar", "histogram", "piechart", "countplot", "boxplot", "heatmap"] = "line"
     periods: list[str] | None = None
 
 

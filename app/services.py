@@ -18,6 +18,7 @@ CHART_TYPES = [
     {"type": "bar", "label": "Bar chart", "description": "Metric values by reporting period."},
     {"type": "grouped_bar", "label": "Grouped bar chart", "description": "Companies and metrics side by side."},
     {"type": "histogram", "label": "Histogram", "description": "Distribution of selected metric values."},
+    {"type": "piechart", "label": "Pie chart", "description": "Proportion of selected metric values."},
     {"type": "countplot", "label": "Count plot", "description": "Number of metric records by company and metric."},
     {"type": "boxplot", "label": "Box plot", "description": "Spread and outliers across companies and metrics."},
     {"type": "heatmap", "label": "Heatmap", "description": "Metric values across periods in a color matrix."},
@@ -177,6 +178,11 @@ def create_chart(rows: list[FinancialMetric], chart_type: str, title: str) -> tu
     elif chart_type == "histogram":
         sns.histplot(data=frame, x="value", hue="company", element="step", bins="auto", ax=axis)
         axis.set(xlabel=unit, ylabel="Number of metric records")
+    elif chart_type == "piechart":
+        pie_data = frame.groupby("series", as_index=False)["value"].sum()
+        axis.pie(pie_data["value"], labels=pie_data["series"], autopct="%1.1f%%", startangle=90,
+                 textprops={"color": "#e4e4e7"}, wedgeprops={"edgecolor": "#18181b", "linewidth": 1})
+        axis.set_ylabel("")
     elif chart_type == "countplot":
         sns.countplot(data=frame, x="company", hue="metric", ax=axis)
         axis.set(xlabel="Company", ylabel="Number of metric records")
