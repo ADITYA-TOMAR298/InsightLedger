@@ -37,10 +37,10 @@ The Firebase client configuration is safe to use in the frontend, but never comm
 
 ## Deploy to one Vercel project
 
-The root `vercel.json` builds the React app and deploys `app/app.py` as the FastAPI Function in the **same Vercel project**. The deployed frontend calls that function through `/api`, so do not set `VITE_API_BASE_URL` for this configuration.
+The root `vercel.json` builds the React app and deploys `app/app.py` as the FastAPI Function in the **same Vercel project**. The FastAPI Function serves the built frontend and handles same-origin `/api/*` requests, so do not set `VITE_API_BASE_URL` for this configuration.
 
 1. Push this repository to GitHub, then import it in Vercel as one project. Leave **Root Directory** set to the repository root (`.`).
-2. Vercel reads `vercel.json`; it runs `cd frontend && npm ci && npm run build`, serves `frontend/dist`, and rewrites `/api/*` to the FastAPI function. Do not override the build command or output directory in the Vercel dashboard.
+2. Vercel reads `vercel.json`; it runs `cd frontend && npm ci && npm run build`. The resulting `frontend/dist` files are bundled with the FastAPI Function, which serves the site and its `/api/*` endpoints. Do not override the build command in the Vercel dashboard.
 3. Add these environment variables for Production (and Preview if desired):
 
 - `VITE_FIREBASE_API_KEY`

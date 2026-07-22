@@ -3,22 +3,9 @@
 
   "buildCommand": "cd frontend && npm ci && npm run build",
 
-  "outputDirectory": "frontend/dist",
-
   "functions": {
     "app/app.py": {
-      "excludeFiles": "{frontend/**,data/**,chroma-db/**,.venv/**,venv/**,tests/**}"
+      "excludeFiles": "{frontend/node_modules/**,frontend/src/**,frontend/.env*,data/**,chroma-db/**,.venv/**,venv/**,tests/**}"
     }
-  },
-
-  "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/app/app.py"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-  ]
+  }
 }

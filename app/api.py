@@ -1,7 +1,9 @@
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
@@ -25,6 +27,21 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title=settings.app_name, version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.cors_origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.mount("/charts", StaticFiles(directory=str(settings.chart_directory)), name="charts")
+frontend_dist = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+
+
+@app.middleware("http")
+async def use_api_prefix_in_production(request, call_next):
+    """Map the browser's same-origin `/api/*` URLs to the FastAPI routes.
+
+    Vercel exposes this FastAPI application at the site root. Local development
+    still calls the unprefixed routes on localhost:8000.
+    """
+    path = request.scope["path"]
+    if path.startswith("/api/"):
+        request.scope["path"] = path[4:]
+        request.scope["raw_path"] = request.scope["path"].encode()
+    return await call_next(request)
 
 
 def document_out(record: ReportDocument) -> DocumentOut:
@@ -114,3 +131,14 @@ def compare_companies(payload: ComparisonRequest, db: Session = Depends(get_db))
         summary.setdefault(key, {})[row["company"]] = row["value"]
         summary[key]["unit"] = row["unit"]
     return ComparisonResponse(companies=[payload.company_a, payload.company_b], records=records, summary=summary)
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_frontend(full_path: str):
+    """Serve Vite's production files and fall back to its SPA entry point."""
+    asset = frontend_dist / full_path
+    if asset.is_file():
+        return FileResponse(asset)
+    if (frontend_dist / "index.html").is_file():
+        return FileResponse(frontend_dist / "index.html")
+    raise HTTPException(404, "Frontend build files are unavailable.")
