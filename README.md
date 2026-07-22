@@ -35,23 +35,14 @@ Open `http://127.0.0.1:5173`. The frontend calls the API at `http://127.0.0.1:80
 
 The Firebase client configuration is safe to use in the frontend, but never commit a `frontend/.env` file containing your project-specific values.
 
-## Deploy
+## Deploy to one Vercel project
 
-### Backend: Render
+The root `vercel.json` builds the React app and deploys `app/app.py` as the FastAPI Function in the **same Vercel project**. The deployed frontend calls that function through `/api`, so do not set `VITE_API_BASE_URL` for this configuration.
 
-This repository includes `render.yaml` for a Render web service. Create a **Blueprint** from the GitHub repository and provide these values when prompted:
+1. Push this repository to GitHub, then import it in Vercel as one project. Leave **Root Directory** set to the repository root (`.`).
+2. Vercel reads `vercel.json`; it runs `cd frontend && npm ci && npm run build`, serves `frontend/dist`, and rewrites `/api/*` to the FastAPI function. Do not override the build command or output directory in the Vercel dashboard.
+3. Add these environment variables for Production (and Preview if desired):
 
-- `DATABASE_URL`: a PostgreSQL connection string. Use a managed PostgreSQL provider; SQLite cannot persist reliably on a free web service.
-- `MISTRAL_API_KEY`: required for report-question answers.
-- `CORS_ORIGINS`: your Vercel production URL, for example `https://insightledger.vercel.app`.
-
-Render uses `uvicorn main:app --host 0.0.0.0 --port $PORT` and checks `/health`. The API URL will be `https://insightledger-api.onrender.com` (or the service name you choose). Render's free tier spins down after inactivity and has an ephemeral filesystem, so locally uploaded reports and Chroma vectors do not survive restarts. Use object storage and an external vector database before relying on uploads in production.
-
-### Frontend: Vercel
-
-Import the repository into Vercel and set the **Root Directory** to `frontend`. Vercel detects Vite; use `npm run build` and `dist` if it asks for build settings. Add these environment variables for Production (and Preview if desired):
-
-- `VITE_API_BASE_URL`: the deployed Render URL, for example `https://insightledger-api.onrender.com`
 - `VITE_FIREBASE_API_KEY`
 - `VITE_FIREBASE_AUTH_DOMAIN`
 - `VITE_FIREBASE_PROJECT_ID`
@@ -59,8 +50,15 @@ Import the repository into Vercel and set the **Root Directory** to `frontend`. 
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 - `VITE_FIREBASE_APP_ID`
 - `VITE_FIREBASE_MEASUREMENT_ID` (optional)
+- `MISTRAL_API_KEY` (required for report-question answers)
+- `CORS_ORIGINS` (optional for the same-project setup; use this only when an external frontend URL must call the API)
 
-After Vercel deploys, add its domain under Firebase Authentication's **Authorized domains**, then update Render's `CORS_ORIGINS` with that same URL and redeploy the API.
+4. Deploy, then open `https://your-project.vercel.app/api/health`. It should return `{"status":"ok"}`. Open the site root to use the React app.
+5. Add the deployed Vercel domain (without `https://`) to Firebase Authentication's **Authorized domains**.
+
+### Important Vercel limits
+
+Vercel Functions have an ephemeral `/tmp` filesystem. Uploaded reports, SQLite data, generated charts, and Chroma vectors can disappear whenever a function instance is replaced; they are not production persistence. Store those in external services before relying on this app for real data. The local embedding stack is also large and can exceed Vercel's Python Function bundle or execution limits. If that happens, replace local `sentence-transformers`/Chroma with hosted embeddings and a managed vector database.
 
 ## API flow
 

@@ -5,7 +5,9 @@ import {
 } from "lucide-react";
 import { auth, firebaseConfigured, signInWithGoogle, signOutUser } from "./firebase";
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+// Production requests stay in this Vercel project.  A separate URL can still
+// be supplied for local development or an intentionally separate API.
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? "http://127.0.0.1:8000" : "/api")).replace(/\/$/, "");
 const features = [
   { number: "01", name: "Upload reports", Icon: FileUp, tone: "amber", description: "Bring annual reports and financial statements into your secure workspace.", hint: "PDF, TXT, MD supported" },
   { number: "02", name: "Ask your reports", Icon: Bot, tone: "emerald", description: "Get clear, source-backed answers from the documents you upload.", hint: "Answers cite report pages" },
