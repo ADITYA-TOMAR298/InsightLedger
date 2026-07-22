@@ -1,17 +1,29 @@
+"""Small, serverless-friendly report processing services.
+
+This module intentionally uses no local embedding model, vector database, or
+plotting library. Those packages make a Vercel Python Function several GB.
+"""
+from __future__ import annotations
+
+import html
+import json
+import re
 import shutil
+import urllib.error
+import urllib.request
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 from fastapi import HTTPException, UploadFile
+from pypdf import PdfReader
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import get_settings
-from app.database import Company, FinancialMetric, ReportDocument
+from app.database import Company, DocumentChunk, FinancialMetric, ReportDocument
 
 settings = get_settings()
-_embeddings = None
-_vector_store = None
 
 CHART_TYPES = [
     {"type": "line", "label": "Line chart", "description": "Trends over reporting periods."},
@@ -25,27 +37,13 @@ CHART_TYPES = [
 ]
 
 
-def embeddings():
-    global _embeddings
-    if _embeddings is None:
-        from langchain_huggingface import HuggingFaceEmbeddings
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=settings.embedding_model,
-            model_kwargs={"device": settings.embedding_device},
-            encode_kwargs={"normalize_embeddings": True},
-        )
-    return _embeddings
-
-
-def vector_store():
-    global _vector_store
-    if _vector_store is None:
-        from langchain_chroma import Chroma
-        _vector_store = Chroma(
-            collection_name="financial_reports", embedding_function=embeddings(),
-            persist_directory=str(settings.chroma_directory),
-        )
-    return _vector_store
+@dataclass
+class RetrievedChunk:
+    document_id: str
+    filename: str
+    company: str
+    page: int | None
+    content: str
 
 
 def get_or_create_company(db: Session, name: str) -> Company:
@@ -57,14 +55,20 @@ def get_or_create_company(db: Session, name: str) -> Company:
     return company
 
 
-def load_document(path: Path):
-    from langchain_community.document_loaders import PyPDFLoader, TextLoader
+def _read_pages(path: Path) -> list[tuple[int | None, str]]:
     suffix = path.suffix.lower()
     if suffix == ".pdf":
-        return PyPDFLoader(str(path)).load()
+        return [(index + 1, page.extract_text() or "") for index, page in enumerate(PdfReader(str(path)).pages)]
     if suffix in {".txt", ".md"}:
-        return TextLoader(str(path), encoding="utf-8", autodetect_encoding=True).load()
+        return [(None, path.read_text(encoding="utf-8", errors="replace"))]
     raise HTTPException(415, "Supported file types are PDF, TXT, and MD.")
+
+
+def _split_text(text: str, size: int = 1200, overlap: int = 180) -> list[str]:
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    return [text[start:start + size] for start in range(0, len(text), size - overlap)]
 
 
 async def ingest_upload(db: Session, file: UploadFile, company_name: str, document_type: str, reporting_period: str | None) -> ReportDocument:
@@ -77,129 +81,84 @@ async def ingest_upload(db: Session, file: UploadFile, company_name: str, docume
     with destination.open("wb") as target:
         shutil.copyfileobj(file.file, target)
     try:
-        pages = load_document(destination)
-        from langchain_text_splitters import RecursiveCharacterTextSplitter
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=180)
-        chunks = splitter.split_documents(pages)
+        chunks = [(page, part) for page, text in _read_pages(destination) for part in _split_text(text)]
         if not chunks:
             raise HTTPException(422, "No readable text was found in this document.")
-        for index, chunk in enumerate(chunks):
-            chunk.metadata.update({
-                "document_id": document_id, "company": company_name.strip(), "filename": filename,
-                "document_type": document_type, "reporting_period": reporting_period or "", "chunk_index": index,
-                "page": int(chunk.metadata.get("page", 0)) + 1,
-            })
-        vector_store().add_documents(chunks, ids=[f"{document_id}:{i}" for i in range(len(chunks))])
         company = get_or_create_company(db, company_name)
         record = ReportDocument(id=document_id, company_id=company.id, filename=filename, document_type=document_type,
                                 reporting_period=reporting_period, stored_path=str(destination), chunk_count=len(chunks))
         db.add(record)
+        db.add_all(DocumentChunk(document_id=document_id, page=page, chunk_index=index, content=content)
+                   for index, (page, content) in enumerate(chunks))
         db.commit()
         db.refresh(record)
         return record
     except Exception:
+        db.rollback()
         destination.unlink(missing_ok=True)
         raise
 
 
-def retrieve(question: str, companies: list[str] | None, document_types: list[str] | None, periods: list[str] | None, top_k: int):
-    filters = []
-    if companies: filters.append({"company": {"$in": companies}})
-    if document_types: filters.append({"document_type": {"$in": document_types}})
-    if periods: filters.append({"reporting_period": {"$in": periods}})
-    filter_arg = filters[0] if len(filters) == 1 else ({"$and": filters} if filters else None)
-    return vector_store().similarity_search(question, k=top_k, filter=filter_arg)
+def _tokens(value: str) -> set[str]:
+    return {token for token in re.findall(r"[a-z0-9]{2,}", value.lower()) if token not in {"the", "and", "for", "with", "from"}}
 
 
-def _legacy_create_chart(rows: list[FinancialMetric], chart_type: str, title: str) -> tuple[str, int]:
+def retrieve(db: Session, question: str, companies: list[str] | None, document_types: list[str] | None,
+             periods: list[str] | None, top_k: int) -> list[RetrievedChunk]:
+    query = select(DocumentChunk).join(DocumentChunk.document).join(ReportDocument.company).options(
+        joinedload(DocumentChunk.document).joinedload(ReportDocument.company))
+    if companies:
+        query = query.where(Company.name.in_(companies))
+    if document_types:
+        query = query.where(ReportDocument.document_type.in_(document_types))
+    if periods:
+        query = query.where(ReportDocument.reporting_period.in_(periods))
+    question_tokens = _tokens(question)
+    matches = []
+    for chunk in db.scalars(query).all():
+        score = len(question_tokens & _tokens(chunk.content))
+        if score:
+            matches.append((score, chunk))
+    matches.sort(key=lambda item: item[0], reverse=True)
+    return [RetrievedChunk(document_id=chunk.document_id, filename=chunk.document.filename,
+                           company=chunk.document.company.name, page=chunk.page, content=chunk.content)
+            for _, chunk in matches[:top_k]]
+
+
+def answer_question(question: str, context: str) -> str:
+    """Call Mistral's chat API without the heavyweight LangChain package."""
+    payload = json.dumps({"model": settings.mistral_model, "temperature": 0, "messages": [
+        {"role": "system", "content": "Answer only from the supplied financial-report context. State when evidence is insufficient and cite source numbers such as [Source 1]."},
+        {"role": "user", "content": f"Question: {question}\n\nContext:\n{context}"},
+    ]}).encode()
+    request = urllib.request.Request("https://api.mistral.ai/v1/chat/completions", data=payload, method="POST", headers={
+        "Authorization": f"Bearer {settings.mistral_api_key}", "Content-Type": "application/json"})
     try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import pandas as pd
-        import seaborn as sns
-    except ImportError as exc:
-        raise HTTPException(503, "Chart dependencies are missing. Run: pip install -r requirements.txt") from exc
-    if not rows:
-        raise HTTPException(404, "No metrics match the requested companies, metrics, and periods.")
-    frame = pd.DataFrame([{"company": row.company.name, "period": row.period, "metric": row.metric, "value": row.value, "unit": row.unit} for row in rows])
-    frame["series"] = frame["company"] + " — " + frame["metric"]
-    frame["period_sort"] = pd.to_datetime(frame["period"], errors="coerce")
-    frame = frame.sort_values(["period_sort", "period"], na_position="last")
-    sns.set_theme(style="whitegrid")
-    figure, axis = plt.subplots(figsize=(10, 6))
-    if chart_type == "line":
-        sns.lineplot(data=frame, x="period", y="value", hue="company", style="metric", marker="o", ax=axis)
-    else:
-        sns.barplot(data=frame, x="period", y="value", hue="series", ax=axis)
-    axis.set_title(title)
-    axis.set_xlabel("Reporting period")
-    axis.set_ylabel(frame["unit"].iloc[0])
-    figure.tight_layout()
-    chart_name = f"{uuid.uuid4()}.png"
-    figure.savefig(settings.chart_directory / chart_name, dpi=160, bbox_inches="tight")
-    plt.close(figure)
-    return chart_name, len(frame)
+        with urllib.request.urlopen(request, timeout=55) as response:
+            body = json.load(response)
+        return str(body["choices"][0]["message"]["content"])
+    except (urllib.error.HTTPError, urllib.error.URLError, KeyError, IndexError) as exc:
+        raise HTTPException(502, "The Mistral service could not generate an answer.") from exc
 
 
 def create_chart(rows: list[FinancialMetric], chart_type: str, title: str) -> tuple[str, int]:
-    """Create a chart from user-selected, verified financial metrics."""
-    try:
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-        import pandas as pd
-        import seaborn as sns
-    except ImportError as exc:
-        raise HTTPException(503, "Chart dependencies are missing. Run: python -m pip install -r requirements.txt") from exc
-
+    """Render a compact SVG chart without matplotlib, pandas, or seaborn."""
     if not rows:
         raise HTTPException(404, "No metrics match the requested companies, metrics, and periods.")
-
-    frame = pd.DataFrame([
-        {"company": row.company.name, "period": row.period, "metric": row.metric,
-         "value": row.value, "unit": row.unit}
-        for row in rows
-    ])
-    frame["series"] = frame["company"] + " - " + frame["metric"]
-    frame["period_sort"] = pd.to_datetime(frame["period"], errors="coerce")
-    frame = frame.sort_values(["period_sort", "period"], na_position="last")
-
-    sns.set_theme(style="whitegrid")
-    figure, axis = plt.subplots(figsize=(10, 6))
-    unit = frame["unit"].iloc[0]
-
-    if chart_type == "line":
-        sns.lineplot(data=frame, x="period", y="value", hue="company", style="metric", marker="o", ax=axis)
-        axis.set(xlabel="Reporting period", ylabel=unit)
-    elif chart_type in {"bar", "grouped_bar"}:
-        sns.barplot(data=frame, x="period", y="value", hue="series", ax=axis)
-        axis.set(xlabel="Reporting period", ylabel=unit)
-    elif chart_type == "histogram":
-        sns.histplot(data=frame, x="value", hue="company", element="step", bins="auto", ax=axis)
-        axis.set(xlabel=unit, ylabel="Number of metric records")
-    elif chart_type == "piechart":
-        pie_data = frame.groupby("series", as_index=False)["value"].sum()
-        axis.pie(pie_data["value"], labels=pie_data["series"], autopct="%1.1f%%", startangle=90,
-                 textprops={"color": "#e4e4e7"}, wedgeprops={"edgecolor": "#18181b", "linewidth": 1})
-        axis.set_ylabel("")
-    elif chart_type == "countplot":
-        sns.countplot(data=frame, x="company", hue="metric", ax=axis)
-        axis.set(xlabel="Company", ylabel="Number of metric records")
-    elif chart_type == "boxplot":
-        sns.boxplot(data=frame, x="metric", y="value", hue="company", ax=axis)
-        axis.set(xlabel="Metric", ylabel=unit)
-    elif chart_type == "heatmap":
-        heatmap_data = frame.pivot_table(index="series", columns="period", values="value", aggfunc="mean")
-        sns.heatmap(heatmap_data, annot=True, fmt=".3g", cmap="Blues", linewidths=0.5, ax=axis,
-                    cbar_kws={"label": unit})
-        axis.set(xlabel="Reporting period", ylabel="Company - metric")
-    else:
+    if chart_type not in {item["type"] for item in CHART_TYPES}:
         raise HTTPException(422, f"Unsupported chart type: {chart_type}")
-
-    axis.set_title(title)
-    figure.tight_layout()
-    chart_name = f"{uuid.uuid4()}.png"
-    figure.savefig(settings.chart_directory / chart_name, dpi=160, bbox_inches="tight")
-    plt.close(figure)
-    return chart_name, len(frame)
+    values = [abs(row.value) for row in rows]
+    maximum = max(values) or 1
+    width, height, left, top = 900, max(220, 90 + len(rows) * 42), 230, 55
+    bars = []
+    palette = ["#34d399", "#a78bfa", "#22d3ee", "#fbbf24"]
+    for index, row in enumerate(rows):
+        y = top + index * 42
+        bar_width = int((abs(row.value) / maximum) * (width - left - 70))
+        label = html.escape(f"{row.company.name} | {row.metric} | {row.period}")
+        bars.append(f'<text x="15" y="{y + 18}" fill="#27272a" font-size="13">{label}</text><rect x="{left}" y="{y}" width="{bar_width}" height="26" rx="4" fill="{palette[index % len(palette)]}"/><text x="{left + bar_width + 8}" y="{y + 18}" fill="#27272a" font-size="13">{row.value:g} {html.escape(row.unit)}</text>')
+    safe_title = html.escape(title)
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}"><rect width="100%" height="100%" fill="white"/><text x="15" y="30" fill="#18181b" font-family="Arial" font-size="20" font-weight="bold">{safe_title} ({html.escape(chart_type)})</text>{"".join(bars)}</svg>'
+    chart_name = f"{uuid.uuid4()}.svg"
+    (settings.chart_directory / chart_name).write_text(svg, encoding="utf-8")
+    return chart_name, len(rows)

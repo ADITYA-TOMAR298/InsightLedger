@@ -4,8 +4,6 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from langchain_mistralai import ChatMistralAI
-from langchain_core.messages import HumanMessage, SystemMessage
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
@@ -13,7 +11,7 @@ from app.config import get_settings
 from app.database import Company, FinancialMetric, ReportDocument, get_db, init_database
 from app.schemas import (AskRequest, AskResponse, ChartRequest, ChartResponse, Citation, CompanyOut, ComparisonRequest,
                          ComparisonResponse, DocumentOut, MetricUpsert)
-from app.services import CHART_TYPES, create_chart, get_or_create_company, ingest_upload, retrieve
+from app.services import CHART_TYPES, answer_question, create_chart, get_or_create_company, ingest_upload, retrieve
 
 settings = get_settings()
 
@@ -59,18 +57,16 @@ async def upload_document(file: UploadFile = File(...), company: str = Form(...)
 
 
 @app.post("/ask", response_model=AskResponse)
-def ask_question(payload: AskRequest):
-    chunks = retrieve(payload.question, payload.companies, payload.document_types, payload.reporting_periods, payload.top_k)
+def ask_question(payload: AskRequest, db: Session = Depends(get_db)):
+    chunks = retrieve(db, payload.question, payload.companies, payload.document_types, payload.reporting_periods, payload.top_k)
     if not chunks: raise HTTPException(404, "No relevant document passages were found.")
-    context = "\n\n".join(f"[Source {i + 1}: {chunk.metadata['company']} | {chunk.metadata['filename']} | page {chunk.metadata.get('page', 'n/a')}]\n{chunk.page_content}" for i, chunk in enumerate(chunks))
+    context = "\n\n".join(f"[Source {i + 1}: {chunk.company} | {chunk.filename} | page {chunk.page or 'n/a'}]\n{chunk.content}" for i, chunk in enumerate(chunks))
     if not settings.mistral_api_key:
         raise HTTPException(503, "MISTRAL_API_KEY must be configured to generate answers.")
-    llm = ChatMistralAI(model=settings.mistral_model, api_key=settings.mistral_api_key, temperature=0)
-    answer = llm.invoke([SystemMessage(content="Answer only from the supplied financial-report context. State when evidence is insufficient and cite source numbers such as [Source 1]."),
-                         HumanMessage(content=f"Question: {payload.question}\n\nContext:\n{context}")]).content
-    citations = [Citation(document_id=c.metadata["document_id"], filename=c.metadata["filename"], company=c.metadata["company"],
-                          page=c.metadata.get("page"), excerpt=c.page_content[:400]) for c in chunks]
-    return AskResponse(answer=str(answer), citations=citations)
+    answer = answer_question(payload.question, context)
+    citations = [Citation(document_id=c.document_id, filename=c.filename, company=c.company,
+                          page=c.page, excerpt=c.content[:400]) for c in chunks]
+    return AskResponse(answer=answer, citations=citations)
 
 
 @app.put("/metrics")

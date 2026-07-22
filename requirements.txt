@@ -10,18 +10,3 @@ sqlalchemy
 psycopg[binary]
 pypdf
 chardet
-
-# RAG
-langchain-community
-langchain-core
-langchain-text-splitters
-langchain-chroma
-langchain-huggingface
-langchain-mistralai
-sentence-transformers
-
-# Financial charts
-numpy
-pandas
-matplotlib
-seaborn

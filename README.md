@@ -58,7 +58,7 @@ The root `vercel.json` builds the React app and deploys `app/app.py` as the Fast
 
 ### Important Vercel limits
 
-Vercel Functions have an ephemeral `/tmp` filesystem. Uploaded reports, SQLite data, generated charts, and Chroma vectors can disappear whenever a function instance is replaced; they are not production persistence. Store those in external services before relying on this app for real data. The local embedding stack is also large and can exceed Vercel's Python Function bundle or execution limits. If that happens, replace local `sentence-transformers`/Chroma with hosted embeddings and a managed vector database.
+Vercel Functions have an ephemeral `/tmp` filesystem. Uploaded reports, SQLite data, and generated charts can disappear whenever a function instance is replaced; they are not production persistence. Store those in external services before relying on this app for real data. This Vercel-compatible build uses lightweight lexical report retrieval and SVG charts instead of a local ML embedding model, vector database, and plotting stack; Mistral still generates grounded answers.
 
 ## API flow
 

@@ -18,10 +18,7 @@ class Settings(BaseSettings):
     chroma_directory: Path | None = None
     upload_directory: Path | None = None
     chart_directory: Path | None = None
-    # Small public model that runs locally on CPU; no embedding API key or GPU is required.
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
-    embedding_device: str = "cpu"
-    # A hosted chat model keeps deployment small; set MISTRAL_API_KEY in the environment.
+    # A hosted chat model keeps the Vercel Function small; set MISTRAL_API_KEY.
     mistral_model: str = "mistral-small-latest"
     mistral_api_key: str | None = None
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]

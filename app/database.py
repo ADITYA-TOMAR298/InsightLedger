@@ -30,6 +30,22 @@ class ReportDocument(Base):
     chunk_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     company: Mapped[Company] = relationship(back_populates="documents")
+    chunks: Mapped[list["DocumentChunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")
+
+
+class DocumentChunk(Base):
+    """A searchable report passage stored with the document metadata.
+
+    Keeping chunks in the database avoids bundling a local vector database and
+    ML embedding model in the Vercel Function.
+    """
+    __tablename__ = "document_chunks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[str] = mapped_column(ForeignKey("documents.id"), index=True)
+    content: Mapped[str] = mapped_column(Text)
+    page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    chunk_index: Mapped[int] = mapped_column(Integer)
+    document: Mapped["ReportDocument"] = relationship(back_populates="chunks")
 
 
 class FinancialMetric(Base):
