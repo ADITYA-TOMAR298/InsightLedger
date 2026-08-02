@@ -170,9 +170,9 @@ def answer_question(question: str, context: str) -> str:
     if not settings.gemini_api_key:
         raise HTTPException(500, "GEMINI_API_KEY is not configured.")
         
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.gemini_api_key}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={settings.gemini_api_key}"
     payload = json.dumps({
-        "system_instruction": {
+        "systemInstruction": {
             "parts": [{"text": "Answer only from the supplied financial-report context. State when evidence is insufficient and cite source numbers such as [Source 1]."}]
         },
         "contents": [
