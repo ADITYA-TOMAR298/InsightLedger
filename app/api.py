@@ -78,8 +78,8 @@ def ask_question(payload: AskRequest, db: Session = Depends(get_db)):
     chunks = retrieve(db, payload.question, payload.companies, payload.document_types, payload.reporting_periods, payload.top_k)
     if not chunks: raise HTTPException(404, "No relevant document passages were found.")
     context = "\n\n".join(f"[Source {i + 1}: {chunk.company} | {chunk.filename} | page {chunk.page or 'n/a'}]\n{chunk.content}" for i, chunk in enumerate(chunks))
-    if not settings.mistral_api_key:
-        raise HTTPException(503, "MISTRAL_API_KEY must be configured to generate answers.")
+    if not settings.gemini_api_key:
+        raise HTTPException(503, "GEMINI_API_KEY must be configured to generate answers.")
     answer = answer_question(payload.question, context)
     citations = [Citation(document_id=c.document_id, filename=c.filename, company=c.company,
                           page=c.page, excerpt=c.content[:400]) for c in chunks]
