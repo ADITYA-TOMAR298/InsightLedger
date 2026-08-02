@@ -14,7 +14,7 @@ python -m pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-Set `MISTRAL_API_KEY` in `.env` to use the report chatbot. The embedding model runs locally on CPU and is downloaded when the first report is indexed.
+Set `GEMINI_API_KEY` in `.env` to use the report chatbot and semantic search. The embedding model and chat both run via the Gemini API to maintain a small server footprint.
 
 **Terminal 2 — React frontend**
 
@@ -50,7 +50,7 @@ The root `vercel.json` builds the React app and deploys `app/app.py` as the Fast
 - `VITE_FIREBASE_MESSAGING_SENDER_ID`
 - `VITE_FIREBASE_APP_ID`
 - `VITE_FIREBASE_MEASUREMENT_ID` (optional)
-- `MISTRAL_API_KEY` (required for report-question answers)
+- `GEMINI_API_KEY` (required for report-question answers and semantic embeddings)
 - `CORS_ORIGINS` (optional for the same-project setup; use this only when an external frontend URL must call the API)
 
 4. Deploy, then open `https://your-project.vercel.app/api/health`. It should return `{"status":"ok"}`. Open the site root to use the React app.
@@ -58,7 +58,7 @@ The root `vercel.json` builds the React app and deploys `app/app.py` as the Fast
 
 ### Important Vercel limits
 
-Vercel Functions have an ephemeral `/tmp` filesystem. Uploaded reports, SQLite data, and generated charts can disappear whenever a function instance is replaced; they are not production persistence. Store those in external services before relying on this app for real data. This Vercel-compatible build uses lightweight lexical report retrieval and SVG charts instead of a local ML embedding model, vector database, and plotting stack; Mistral still generates grounded answers.
+Vercel Functions have an ephemeral `/tmp` filesystem. Uploaded reports, SQLite data, and generated charts can disappear whenever a function instance is replaced; they are not production persistence. Store those in external services before relying on this app for real data. This Vercel-compatible build uses pure-Python cosine similarity with Gemini embeddings and SVG charts instead of a local ML embedding model, vector database, and plotting stack; Gemini 1.5 Flash still generates grounded answers.
 
 ## API flow
 

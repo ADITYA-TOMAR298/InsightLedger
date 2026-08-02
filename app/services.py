@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 import re
 import shutil
 import urllib.error
@@ -71,7 +72,42 @@ def _split_text(text: str, size: int = 1200, overlap: int = 180) -> list[str]:
     return [text[start:start + size] for start in range(0, len(text), size - overlap)]
 
 
+def get_gemini_embedding(text: str) -> list[float]:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={settings.gemini_api_key}"
+    payload = json.dumps({"model": "models/text-embedding-004", "content": {"parts": [{"text": text}]}}).encode()
+    request = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)["embedding"]["values"]
+    except Exception as exc:
+        raise HTTPException(502, "Failed to fetch embedding from Gemini.") from exc
+
+
+def get_gemini_embeddings_batch(texts: list[str]) -> list[list[float]]:
+    if not texts: return []
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key={settings.gemini_api_key}"
+    requests = [{"model": "models/text-embedding-004", "content": {"parts": [{"text": t}]}} for t in texts]
+    payload = json.dumps({"requests": requests}).encode()
+    request = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=55) as response:
+            data = json.load(response)
+            return [item["values"] for item in data["embeddings"]]
+    except Exception as exc:
+        raise HTTPException(502, "Failed to fetch batch embeddings from Gemini.") from exc
+
+
+def _cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
+    dot_product = sum(a * b for a, b in zip(vec1, vec2))
+    norm_a = math.sqrt(sum(a * a for a in vec1))
+    norm_b = math.sqrt(sum(b * b for b in vec2))
+    if norm_a == 0 or norm_b == 0: return 0.0
+    return dot_product / (norm_a * norm_b)
+
+
 async def ingest_upload(db: Session, file: UploadFile, company_name: str, document_type: str, reporting_period: str | None) -> ReportDocument:
+    if not settings.gemini_api_key:
+        raise HTTPException(500, "GEMINI_API_KEY is not configured.")
     filename = Path(file.filename or "report.pdf").name
     suffix = Path(filename).suffix.lower()
     if suffix not in {".pdf", ".txt", ".md"}:
@@ -84,12 +120,19 @@ async def ingest_upload(db: Session, file: UploadFile, company_name: str, docume
         chunks = [(page, part) for page, text in _read_pages(destination) for part in _split_text(text)]
         if not chunks:
             raise HTTPException(422, "No readable text was found in this document.")
+            
+        # Batch fetch embeddings (Gemini supports up to 100 per batch)
+        embeddings = []
+        for i in range(0, len(chunks), 100):
+            batch_texts = [text for _, text in chunks[i:i+100]]
+            embeddings.extend(get_gemini_embeddings_batch(batch_texts))
+            
         company = get_or_create_company(db, company_name)
         record = ReportDocument(id=document_id, company_id=company.id, filename=filename, document_type=document_type,
                                 reporting_period=reporting_period, stored_path=str(destination), chunk_count=len(chunks))
         db.add(record)
-        db.add_all(DocumentChunk(document_id=document_id, page=page, chunk_index=index, content=content)
-                   for index, (page, content) in enumerate(chunks))
+        db.add_all(DocumentChunk(document_id=document_id, page=page, chunk_index=index, content=content, embedding=json.dumps(emb))
+                   for index, ((page, content), emb) in enumerate(zip(chunks, embeddings)))
         db.commit()
         db.refresh(record)
         return record
@@ -99,12 +142,11 @@ async def ingest_upload(db: Session, file: UploadFile, company_name: str, docume
         raise
 
 
-def _tokens(value: str) -> set[str]:
-    return {token for token in re.findall(r"[a-z0-9]{2,}", value.lower()) if token not in {"the", "and", "for", "with", "from"}}
-
-
 def retrieve(db: Session, question: str, companies: list[str] | None, document_types: list[str] | None,
              periods: list[str] | None, top_k: int) -> list[RetrievedChunk]:
+    if not settings.gemini_api_key:
+        raise HTTPException(500, "GEMINI_API_KEY is not configured.")
+        
     query = select(DocumentChunk).join(DocumentChunk.document).join(ReportDocument.company).options(
         joinedload(DocumentChunk.document).joinedload(ReportDocument.company))
     if companies:
@@ -113,12 +155,16 @@ def retrieve(db: Session, question: str, companies: list[str] | None, document_t
         query = query.where(ReportDocument.document_type.in_(document_types))
     if periods:
         query = query.where(ReportDocument.reporting_period.in_(periods))
-    question_tokens = _tokens(question)
+        
+    question_embedding = get_gemini_embedding(question)
+    
     matches = []
     for chunk in db.scalars(query).all():
-        score = len(question_tokens & _tokens(chunk.content))
-        if score:
+        if chunk.embedding:
+            chunk_embedding = json.loads(chunk.embedding)
+            score = _cosine_similarity(question_embedding, chunk_embedding)
             matches.append((score, chunk))
+            
     matches.sort(key=lambda item: item[0], reverse=True)
     return [RetrievedChunk(document_id=chunk.document_id, filename=chunk.document.filename,
                            company=chunk.document.company.name, page=chunk.page, content=chunk.content)
@@ -126,19 +172,29 @@ def retrieve(db: Session, question: str, companies: list[str] | None, document_t
 
 
 def answer_question(question: str, context: str) -> str:
-    """Call Mistral's chat API without the heavyweight LangChain package."""
-    payload = json.dumps({"model": settings.mistral_model, "temperature": 0, "messages": [
-        {"role": "system", "content": "Answer only from the supplied financial-report context. State when evidence is insufficient and cite source numbers such as [Source 1]."},
-        {"role": "user", "content": f"Question: {question}\n\nContext:\n{context}"},
-    ]}).encode()
-    request = urllib.request.Request("https://api.mistral.ai/v1/chat/completions", data=payload, method="POST", headers={
-        "Authorization": f"Bearer {settings.mistral_api_key}", "Content-Type": "application/json"})
+    """Call Gemini's chat API without the heavyweight LangChain package."""
+    if not settings.gemini_api_key:
+        raise HTTPException(500, "GEMINI_API_KEY is not configured.")
+        
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={settings.gemini_api_key}"
+    payload = json.dumps({
+        "system_instruction": {
+            "parts": [{"text": "Answer only from the supplied financial-report context. State when evidence is insufficient and cite source numbers such as [Source 1]."}]
+        },
+        "contents": [
+            {"role": "user", "parts": [{"text": f"Question: {question}\n\nContext:\n{context}"}]}
+        ]
+    }).encode()
+    
+    request = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=55) as response:
             body = json.load(response)
-        return str(body["choices"][0]["message"]["content"])
-    except (urllib.error.HTTPError, urllib.error.URLError, KeyError, IndexError) as exc:
-        raise HTTPException(502, "The Mistral service could not generate an answer.") from exc
+        if "candidates" in body and body["candidates"]:
+            return str(body["candidates"][0]["content"]["parts"][0]["text"])
+        return "The model did not return an answer."
+    except Exception as exc:
+        raise HTTPException(502, "The Gemini service could not generate an answer.") from exc
 
 
 def create_chart(rows: list[FinancialMetric], chart_type: str, title: str) -> tuple[str, int]:

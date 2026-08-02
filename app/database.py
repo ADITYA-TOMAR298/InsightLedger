@@ -45,6 +45,7 @@ class DocumentChunk(Base):
     content: Mapped[str] = mapped_column(Text)
     page: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_index: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[str | None] = mapped_column(Text, nullable=True)
     document: Mapped["ReportDocument"] = relationship(back_populates="chunks")
 
 

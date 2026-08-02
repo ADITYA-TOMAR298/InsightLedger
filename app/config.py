@@ -18,9 +18,8 @@ class Settings(BaseSettings):
     chroma_directory: Path | None = None
     upload_directory: Path | None = None
     chart_directory: Path | None = None
-    # A hosted chat model keeps the Vercel Function small; set MISTRAL_API_KEY.
-    mistral_model: str = "mistral-small-latest"
-    mistral_api_key: str | None = None
+    # A hosted chat model keeps the Vercel Function small; set GEMINI_API_KEY.
+    gemini_api_key: str | None = None
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     def model_post_init(self, __context) -> None:
