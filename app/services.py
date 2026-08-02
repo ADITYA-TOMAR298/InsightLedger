@@ -72,9 +72,11 @@ def _split_text(text: str, size: int = 1200, overlap: int = 180) -> list[str]:
     return [text[start:start + size] for start in range(0, len(text), size - overlap)]
 
 
+import concurrent.futures
+
 def get_gemini_embedding(text: str) -> list[float]:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={settings.gemini_api_key}"
-    payload = json.dumps({"model": "models/text-embedding-004", "content": {"parts": [{"text": text}]}}).encode()
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-2:embedContent?key={settings.gemini_api_key}"
+    payload = json.dumps({"model": "models/gemini-embedding-2", "content": {"parts": [{"text": text}]}}).encode()
     request = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
@@ -85,16 +87,10 @@ def get_gemini_embedding(text: str) -> list[float]:
 
 def get_gemini_embeddings_batch(texts: list[str]) -> list[list[float]]:
     if not texts: return []
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:batchEmbedContents?key={settings.gemini_api_key}"
-    requests = [{"model": "models/text-embedding-004", "content": {"parts": [{"text": t}]}} for t in texts]
-    payload = json.dumps({"requests": requests}).encode()
-    request = urllib.request.Request(url, data=payload, method="POST", headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(request, timeout=55) as response:
-            data = json.load(response)
-            return [item["values"] for item in data["embeddings"]]
-    except Exception as exc:
-        raise HTTPException(502, "Failed to fetch batch embeddings from Gemini.") from exc
+    # Gemini v1beta doesn't cleanly support batchEmbedContents for text-embedding-004
+    # We use ThreadPoolExecutor to fetch them concurrently using the standard endpoint
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        return list(executor.map(get_gemini_embedding, texts))
 
 
 def _cosine_similarity(vec1: list[float], vec2: list[float]) -> float:
@@ -121,11 +117,9 @@ async def ingest_upload(db: Session, file: UploadFile, company_name: str, docume
         if not chunks:
             raise HTTPException(422, "No readable text was found in this document.")
             
-        # Batch fetch embeddings (Gemini supports up to 100 per batch)
-        embeddings = []
-        for i in range(0, len(chunks), 100):
-            batch_texts = [text for _, text in chunks[i:i+100]]
-            embeddings.extend(get_gemini_embeddings_batch(batch_texts))
+        # Fetch embeddings concurrently
+        batch_texts = [text for _, text in chunks]
+        embeddings = get_gemini_embeddings_batch(batch_texts)
             
         company = get_or_create_company(db, company_name)
         record = ReportDocument(id=document_id, company_id=company.id, filename=filename, document_type=document_type,
